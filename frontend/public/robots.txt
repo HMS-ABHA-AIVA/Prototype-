@@ -1,0 +1,3 @@
+# This is a private hospital application: do not index it.
+User-agent: *
+Disallow: /

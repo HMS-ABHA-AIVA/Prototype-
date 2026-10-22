@@ -1,0 +1,4 @@
+# Documents are binary: never rewrite their line endings (a PDF that git treats as text gets corrupted on Windows checkouts)
+*.pdf binary
+*.xlsx binary
+*.png binary

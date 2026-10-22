@@ -1,0 +1,6 @@
+node_modules
+.env
+/generated/prisma
+
+# Local-only files (never commit)
+.local-credentials.txt

@@ -1,0 +1,12 @@
+node_modules
+dist
+.env
+.env.*
+!.env.example
+.local-credentials.txt
+env.cloudrun.yaml
+tests
+scripts
+*.md
+Dockerfile
+.dockerignore

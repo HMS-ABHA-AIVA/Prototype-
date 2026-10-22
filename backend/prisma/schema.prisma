@@ -1,0 +1,1527 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+//
+// One schema for the whole merged application:
+//  - the ABDM M1 tables (Facility, User, Patient, AbhaPatient, AbhaTransaction, AbhaAuditLog, PatientShare ...);
+//  - the hospital tables merged from AIVA OSHealth (stage 0 onwards: staff, beds, visits, billing, pharmacy, lab ...).
+// Every hospital table carries facilityId: one hospital can never read another's rows (docs/MERGE_PLAN.md).
+// The hospital modules (src/hospital) run plain SQL on these tables, so tables they insert into generate their own ids
+// and timestamps in the database (dbgenerated / now()), and their timestamps are timestamptz.
+// CHECK constraints, partial unique indexes and the numbering triggers live in the migration SQL.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+// The connection URL is in prisma.config.ts (migrations) and in src/config/db.ts (the application).
+datasource db {
+  provider = "postgresql"
+}
+
+model User{
+  id String @id @default(uuid())
+  name String
+  email String @unique
+  passwordHash String
+  facilityId String
+  facility Facility @relation(fields: [facilityId], references: [id])
+  refreshTokens UserRefreshToken[]
+  // What this login may do. Everyone who existed before roles were introduced is an admin, as they effectively were.
+  role StaffRole @default(admin)
+  // An inactive login cannot sign in and is refused on role-protected routes.
+  active Boolean @default(true)
+  staff Staff?
+
+  // Sign-in safeguards (merged from OSHealth): a new or reset password must be changed at the next sign-in; five wrong
+  // passwords lock the login for 15 minutes; raising tokenVersion ends every session (password change, deactivation).
+  mustChangePassword Boolean   @default(false)
+  failedLogins       Int       @default(0)
+  lockedUntil        DateTime? @db.Timestamptz(3)
+  lastLoginAt        DateTime? @db.Timestamptz(3)
+  tokenVersion       Int       @default(0)
+  // Set when this person asked for a password reset ("forgot password"); cleared when an administrator sets a new one.
+  resetRequestedAt   DateTime? @db.Timestamptz(3)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+enum StaffRole {
+  front_office
+  doctor
+  nurse
+  pharmacist
+  biller
+  housekeeping
+  lab
+  admin
+}
+
+enum EmploymentType {
+  salaried
+  visiting_fee
+}
+
+// A member of staff. Not everyone has a login (a visiting doctor may be listed without one): userId is set when they do.
+// `role` here is the one the hospital sees; when a login exists the same role is kept on the User (see staff.ts).
+model Staff {
+  id         String @id @default(dbgenerated("(gen_random_uuid())::text"))
+  facilityId String
+  userId     String? @unique
+
+  name       String
+  role       StaffRole
+  department String
+
+  // Health Professional Registry id (ABDM)
+  hprId      String?
+
+  employmentType  EmploymentType @default(salaried)
+  monthlySalary   Decimal? @db.Decimal(12, 2)
+  feePerConsult   Decimal? @db.Decimal(12, 2)
+  // What a patient pays to see this doctor, when set for this doctor
+  consultationFee Decimal? @db.Decimal(12, 2)
+  // Only the last four digits are ever stored
+  bankAccountLast4 String?
+  dateOfJoining   DateTime @default(now()) @db.Date
+  active          Boolean  @default(true)
+
+  createdAt DateTime @default(now()) @db.Timestamptz(3)
+  updatedAt DateTime @default(now()) @updatedAt @db.Timestamptz(3)
+
+  facility Facility @relation(fields: [facilityId], references: [id])
+  user     User?    @relation(fields: [userId], references: [id])
+
+  encountersAsDoctor Encounter[]
+  attendance         Attendance[]
+  roster             RosterEntry[]
+  payrollLines       PayrollLine[]
+  opdPaymentsTaken   OpdPayment[]
+  rxTemplates        RxTemplate[]
+
+  @@index([facilityId, role])
+}
+
+// The hospital's own settings (fees, GSTIN, print text ...). Only values that were changed are stored.
+model HospitalSetting {
+  facilityId String
+  key        String
+  value      String
+  updatedAt  DateTime @default(now()) @updatedAt @db.Timestamptz(3)
+
+  @@id([facilityId, key])
+}
+
+// Append-only record of changes for the whole hospital (NABH / ABDM audit readiness). ABHA actions also have their own
+// metadata-only trail in AbhaAuditLog.
+model AuditLog {
+  id         String   @id @default(dbgenerated("(gen_random_uuid())::text"))
+  facilityId String
+  at         DateTime @default(now()) @db.Timestamptz(3)
+  actor      String
+  action     String
+  detail     String   @default("")
+
+  @@index([facilityId, at])
+}
+
+// occupied (patient in bed) -> dirty (just vacated) -> cleaning (housekeeping started) -> vacant (ready).
+// A vacant bed can be reserved for a patient who is coming; it is then not available to anyone else.
+enum BedStatus {
+  occupied
+  dirty
+  cleaning
+  vacant
+  reserved
+}
+
+model Bed {
+  id         String @id @default(dbgenerated("(gen_random_uuid())::text"))
+  facilityId String
+
+  ward  String
+  bedNo String
+
+  status      BedStatus @default(vacant)
+  statusSince DateTime  @default(now()) @db.Timestamptz(3)
+
+  // Who is in the bed, and under which visit
+  patientId   String?
+  encounterId String?
+
+  // Who a reserved bed is being kept for (a registered patient, or just a name), until when, and why
+  reservedPatientId String?
+  reservedFor       String?
+  reservedUntil     DateTime? @db.Timestamptz(3)
+  reservedNote      String?
+
+  facility        Facility   @relation(fields: [facilityId], references: [id])
+  patient         Patient?   @relation("BedOccupant", fields: [patientId], references: [id], onDelete: SetNull)
+  reservedPatient Patient?   @relation("BedReservation", fields: [reservedPatientId], references: [id], onDelete: SetNull)
+  encounter       Encounter? @relation("BedCurrentEncounter", fields: [encounterId], references: [id], onDelete: SetNull)
+  housekeeping    HousekeepingLog[]
+  admissions      Encounter[] @relation("EncounterBed")
+  stays           BedStay[]
+
+  @@unique([facilityId, ward, bedNo])
+  @@index([facilityId, status])
+}
+
+enum HousekeepingAction {
+  discharge_release
+  cleaning_started
+  cleaning_completed
+}
+
+// One line of bed-turnover history (patient left, cleaning started, cleaning done)
+model HousekeepingLog {
+  id         String             @id @default(dbgenerated("(gen_random_uuid())::text"))
+  facilityId String
+  bedId      String
+  action     HousekeepingAction
+  at         DateTime           @default(now()) @db.Timestamptz(3)
+  by         String
+
+  bed Bed @relation(fields: [bedId], references: [id], onDelete: Cascade)
+
+  @@index([facilityId, at])
+}
+
+// Per-hospital running numbers (MRN, bill numbers ...): `value` is the last number issued.
+// Issued by the SQL function next_facility_number(facilityId, key, start), which is safe under concurrency.
+model FacilityCounter {
+  facilityId String
+  key        String
+  value      Int
+
+  @@id([facilityId, key])
+}
+model UserRefreshToken {
+  id         String   @id @default(cuid())
+  tokenHash  String
+  userId     String
+  expiresAt  DateTime
+  createdAt  DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id])
+
+  @@index([userId])
+}
+
+model Facility {
+  id           String   @id @default(cuid())
+  name         String
+  hfrId        String   @unique
+  email        String   @unique
+  passwordHash String
+
+  patients     Patient[]
+  users        User[]
+  abdmData       FacilityAbdmData[]
+  refreshTokens FacilityRefreshToken[]
+  abhaTransactions AbhaTransaction[]
+  patientShares    PatientShare[]
+  staff            Staff[]
+  beds             Bed[]
+
+  // Facility profile (the HFR id above is the registry id; it is also the HIP id Scan & Share is routed on)
+  hipId        String?
+  facilityType String?
+  address      String?
+  state        String?
+  district     String?
+  pincode      String?
+  phone        String?
+  // The hospital's contact e-mail shown on its profile and prints (`email` above is the facility owner's login)
+  contactEmail String?
+  latitude     Decimal? @db.Decimal(9, 6)
+  longitude    Decimal? @db.Decimal(9, 6)
+
+  // active | suspended. A suspended hospital's staff and owner cannot sign in, and sessions it holds stop working.
+  status       String    @default("active")
+  suspendedAt  DateTime? @db.Timestamptz(3)
+
+  encounters        Encounter[]
+  drugs             Drug[]
+  bills             Bill[]
+  supplies          Supply[]
+  wasteBatches      WasteBatch[]
+  payrollRuns       PayrollRun[]
+  opdPayments       OpdPayment[]
+  panels            Panel[]
+  services          Service[]
+  investigations    Investigation[]
+  rxTemplates       RxTemplate[]
+  ipdPayments       IpdPayment[]
+  births            Birth[]
+  suppliers         Supplier[]
+  purchases         Purchase[]
+  pharmacySales     PharmacySale[]
+  labInvoices       LabInvoice[]
+  clinicalOrders    ClinicalOrder[]
+
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+}
+model FacilityRefreshToken {
+  id         String   @id @default(cuid())
+  tokenHash  String
+  facilityId String
+  expiresAt  DateTime
+  createdAt  DateTime @default(now())
+
+  facility Facility @relation(fields: [facilityId], references: [id])
+
+  @@index([facilityId])
+}
+model FacilityAbdmData {
+  id           String   @id @default(cuid())
+  facilityId   String
+  clientId     String
+  clientSecret String
+  environment  AbdmEnvironment
+  facility     Facility @relation(fields: [facilityId], references: [id])
+
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  @@unique([facilityId, environment])
+
+}
+
+enum AbdmEnvironment {
+  SANDBOX
+  PRODUCTION
+}
+
+
+model Patient {
+
+    id String @id @default(dbgenerated("(gen_random_uuid())::text"))
+
+    name String
+    phone String
+    email String?
+
+    // Compared with the ABHA profile before an ABHA can be linked (see abhaMatch.ts)
+    dateOfBirth DateTime? @db.Date
+    // When only the age is known (walk-in registration at the OPD / emergency desk): the birth year it implies.
+    // dateOfBirth, when set, is the more precise value and wins.
+    yearOfBirth Int?
+
+    // Filled from the ABHA profile when an ABHA is linked (only where empty); editable by staff except name/DOB/gender
+    gender       String?
+    address      String?
+    stateName    String?
+    districtName String?
+
+    facilityId String
+
+    // Medical record number, unique within the hospital ("MRN-10001"); issued by a database trigger from FacilityCounter
+    mrn String?
+    allergies   String[] @default([])
+    problemList String[] @default([])
+
+    // Set when linking an ABHA replaced the name / date of birth typed at registration; shown on the patient's record
+    abhaUpdateNote String?
+
+    facility Facility @relation(fields: [facilityId], references: [id])
+
+    abha AbhaPatient?
+    abhaTransactions AbhaTransaction[]
+    bedsOccupied Bed[] @relation("BedOccupant")
+    bedsReserved Bed[] @relation("BedReservation")
+
+    encounters        Encounter[]
+    bills             Bill[]
+    opdPayments       OpdPayment[]
+    ipdPayments       IpdPayment[]
+    births            Birth[]
+    documents         EncounterDocument[]
+    pharmacySales     PharmacySale[]
+    labInvoices       LabInvoice[]
+    clinicalOrders    ClinicalOrder[]
+
+    createdAt DateTime @default(now())
+    updatedAt DateTime @default(now()) @updatedAt
+
+    @@index([facilityId])
+    @@index([phone])
+    @@unique([facilityId, mrn])
+}
+
+model AbhaPatient {
+  id String @id @default(uuid())
+
+  patientId String @unique
+
+  abhaNumber String @unique
+  abhaAddress String?
+
+  patient Patient @relation(fields: [patientId], references: [id])
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+
+model AbhaTransaction {
+  id String @id @default(uuid())
+
+  txnId String @unique
+
+  patientId String
+  facilityId String
+
+  purpose AbhaTransactionPurpose
+  status AbhaTransactionStatus
+
+  expiresAt DateTime
+
+  // Consent shown to and accepted by the patient (set when the OTP is requested; for enrolment it is
+  // also the artifact sent to ABDM)
+  consentCode       String?
+  consentVersion    String?
+  consentAcceptedAt DateTime?
+
+  // Language the consent was shown in ("en" or "hi")
+  consentLanguage   String?
+
+  // Enrolment follow-ups (mobile verification, ABHA address) continue on ABDM's enrolment txnId
+  enrolTxnId        String?
+  mobileOtpTxnId    String?
+  mobileVerified    Boolean @default(false)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  patient Patient @relation(fields: [patientId], references: [id])
+  facility Facility @relation(fields: [facilityId], references: [id])
+
+  @@index([patientId])
+  @@index([facilityId])
+}
+
+enum AbhaTransactionPurpose {
+  ENROLLMENT
+  VERIFICATION
+  PROFILE_UPDATE
+}
+
+enum AbhaTransactionStatus {
+  PENDING
+  COMPLETED
+  FAILED
+  EXPIRED
+}
+
+// Who did what in the ABHA module (NHA asks for a complete audit trail). Metadata only:
+// never Aadhaar/mobile numbers, OTPs, tokens or profile data.
+model AbhaAuditLog {
+  id String @id @default(uuid())
+
+  facilityId String
+  userId     String?
+  patientId  String?
+  // our AbhaTransaction.id when the request carried one
+  transactionId String?
+
+  action     String
+  outcome    String
+  httpStatus Int
+  errorCode  String?
+
+  ip        String?
+  userAgent String?
+
+  createdAt DateTime @default(now())
+
+  @@index([facilityId, createdAt])
+  @@index([patientId])
+}
+
+// A profile a person shared by scanning a counter QR code (Scan & Share). It waits here, for at most the token's
+// 30-minute validity, until staff register the patient or dismiss it; then it is deleted. These rows are personal
+// data, so expired ones are purged (see share.service.ts) and nothing from them is written to logs.
+model PatientShare {
+  id String @id @default(uuid())
+
+  facilityId  String
+  environment AbdmEnvironment
+
+  // Counter from the QR code, and the token handed back to the patient for that counter's queue
+  counterCode String
+  tokenNumber Int
+
+  // REQUEST-ID of the inbound share: ABDM retries carry the same one and are ignored
+  requestId String @unique
+
+  abhaNumber  String?
+  abhaAddress String
+  name        String
+  gender      String?
+  dayOfBirth   Int?
+  monthOfBirth Int?
+  yearOfBirth  Int
+  addressLine String?
+  district    String?
+  state       String?
+  pincode     String?
+  phone       String?
+
+  // Set when this ABHA is already linked to a patient of the facility
+  matchedPatientId String?
+
+  receivedAt DateTime @default(now())
+  expiresAt  DateTime
+
+  facility Facility @relation(fields: [facilityId], references: [id])
+
+  @@index([facilityId, expiresAt])
+  @@index([facilityId, counterCode, abhaAddress])
+}
+
+// Last token handed out per counter per day, so numbers stay sequential and are never reused when shares are deleted
+model ShareTokenCounter {
+  facilityId  String
+  counterCode String
+  tokenDate   DateTime @db.Date
+  lastToken   Int
+
+  @@id([facilityId, counterCode, tokenDate])
+}
+
+// =====================================================================================================================
+// Hospital modules merged from AIVA OSHealth (stage 2 onwards). Statuses are text with CHECK constraints (see the
+// migration), so a new status is a one-line migration.
+// =====================================================================================================================
+
+// ---- Platform: the people who run the product (set up hospitals, switch one off) ------------------------------------
+model PlatformAdmin {
+  id                 String    @id @default(dbgenerated("(gen_random_uuid())::text"))
+  name               String
+  username           String    @unique
+  passwordHash       String
+  active             Boolean   @default(true)
+  mustChangePassword Boolean   @default(false)
+  failedLogins       Int       @default(0)
+  lockedUntil        DateTime? @db.Timestamptz(3)
+  tokenVersion       Int       @default(0)
+  lastLoginAt        DateTime? @db.Timestamptz(3)
+  createdAt          DateTime  @default(now()) @db.Timestamptz(3)
+}
+
+model PlatformAudit {
+  id     BigInt   @id @default(autoincrement())
+  at     DateTime @default(now()) @db.Timestamptz(3)
+  actor  String
+  action String
+  detail String   @default("")
+
+  @@index([at])
+}
+
+// ---- Visits: one episode of care (OPD consultation, emergency case, inpatient admission) ------------------------------
+model Encounter {
+  id                String    @id @default(dbgenerated("(gen_random_uuid())::text"))
+  facilityId        String
+  patientId         String
+  // OPD | IPD | ER
+  type              String
+  // awaiting_payment, waiting, in_consult, in_er, admitted, discharged, referred, lama, deceased, billed, closed, cancelled
+  status            String
+  doctorId          String?
+  department        String
+  // OPD queue token, per department per (Indian) calendar day it was issued
+  tokenNo           Int?
+  tokenIssuedOn     DateTime? @db.Date
+  bedId             String?
+  admittedAt        DateTime? @db.Timestamptz(3)
+  // emergency
+  chiefComplaint    String?
+  triageLevel       String?
+  arrivalMode       String?
+  dispositionNote   String?
+  referredTo        String?
+  // an ER/OPD encounter and the IPD admission it led to point at each other
+  linkedEncounterId String?
+  // consultation note (SOAP)
+  soapSubjective    String?
+  soapObjective     String?
+  soapAssessment    String?
+  soapPlan          String?
+  dischargeSummary  String?
+  billed            Boolean   @default(false)
+  // what an inpatient stay is billed under
+  panelId           String?
+  beneficiaryId     String?
+  dischargedAt      DateTime? @db.Timestamptz(3)
+  createdAt         DateTime  @default(now()) @db.Timestamptz(3)
+  updatedAt         DateTime  @default(now()) @db.Timestamptz(3)
+
+  facility      Facility   @relation(fields: [facilityId], references: [id])
+  patient       Patient    @relation(fields: [patientId], references: [id])
+  doctor        Staff?     @relation(fields: [doctorId], references: [id])
+  bed           Bed?       @relation("EncounterBed", fields: [bedId], references: [id])
+  linked        Encounter? @relation("LinkedEncounter", fields: [linkedEncounterId], references: [id])
+  linkedFrom    Encounter[] @relation("LinkedEncounter")
+  panel         Panel?     @relation(fields: [panelId], references: [id])
+  bedsHeld      Bed[]      @relation("BedCurrentEncounter")
+
+  vitals        Vital[]
+  prescriptions Prescription[]
+  orders        ClinicalOrder[]
+  bills         Bill[]
+  bedStays      BedStay[]
+  ipdCharges    IpdCharge[]
+  ipdPayments   IpdPayment[]
+  births        Birth[]
+  documents     EncounterDocument[]
+  pharmacySales PharmacySale[]
+  medicationSchedules MedicationSchedule[]
+
+  @@index([facilityId, patientId])
+  @@index([facilityId, type, status])
+}
+
+model Vital {
+  id          String   @id @default(dbgenerated("(gen_random_uuid())::text"))
+  facilityId  String
+  encounterId String
+  takenAt     DateTime @default(now()) @db.Timestamptz(3)
+  tempF       Decimal? @db.Decimal(4, 1)
+  pulse       Int?
+  bp          String?
+  spo2        Int?
+  rr          Int?
+
+  encounter Encounter @relation(fields: [encounterId], references: [id], onDelete: Cascade)
+
+  @@index([encounterId, takenAt])
+}
+
+model Prescription {
+  id          String   @id @default(dbgenerated("(gen_random_uuid())::text"))
+  facilityId  String
+  encounterId String
+  drugName    String
+  dose        String
+  frequency   String
+  duration    String
+  dispensed   Boolean  @default(false)
+  // the line began as an AI suggestion that the doctor reviewed and chose to add
+  aiSuggested Boolean  @default(false)
+  createdAt   DateTime @default(now()) @db.Timestamptz(3)
+
+  encounter Encounter @relation(fields: [encounterId], references: [id], onDelete: Cascade)
+  saleItems PharmacySaleItem[]
+  schedules MedicationSchedule[]
+
+  @@index([encounterId])
+}
+
+// A lab test or radiology study, ordered during a visit (goes on its bill) or at the lab desk (has its own invoice).
+// ordered -> sample_collected (lab) / in_progress (radiology) -> resulted -> completed (signed); or cancelled.
+model ClinicalOrder {
+  id                String    @id @default(dbgenerated("(gen_random_uuid())::text"))
+  facilityId        String
+  encounterId       String?
+  patientId         String
+  labInvoiceId      String?
+  investigationId   String?
+  // lab | radiology
+  type              String
+  name              String
+  status            String    @default("ordered")
+  createdAt         DateTime  @default(now()) @db.Timestamptz(3)
+  // sample number (lab) or accession number (radiology)
+  accessionNo       String?
+  collectedAt       DateTime? @db.Timestamptz(3)
+  collectedBy       String?
+  sampleNote        String?
+  resultedAt        DateTime? @db.Timestamptz(3)
+  resultedBy        String?
+  resultedByStaffId String?
+  remarks           String?
+  findings          String?
+  impression        String?
+  signedAt          DateTime? @db.Timestamptz(3)
+  signedBy          String?
+  signedByStaffId   String?
+  amendedCount      Int       @default(0)
+  critical          Boolean   @default(false)
+  criticalAckBy     String?
+  criticalAckAt     DateTime? @db.Timestamptz(3)
+  cancelReason      String?
+  cancelledBy       String?
+  cancelledAt       DateTime? @db.Timestamptz(3)
+
+  facility      Facility       @relation(fields: [facilityId], references: [id])
+  encounter     Encounter?     @relation(fields: [encounterId], references: [id], onDelete: Cascade)
+  patient       Patient        @relation(fields: [patientId], references: [id])
+  labInvoice    LabInvoice?    @relation(fields: [labInvoiceId], references: [id])
+  investigation Investigation? @relation(fields: [investigationId], references: [id])
+  invoiceItem   LabInvoiceItem?
+  results       OrderResult[]
+  amendments    ReportAmendment[]
+  attachments   OrderAttachment[]
+
+  @@index([encounterId])
+  @@index([facilityId, status, createdAt])
+  @@index([facilityId, patientId, createdAt(sort: Desc)])
+  @@index([labInvoiceId])
+}
+
+// The pharmacy's item master. Stock is held per batch (DrugBatch).
+model Drug {
+  id           String  @id @default(dbgenerated("(gen_random_uuid())::text"))
+  facilityId   String
+  name         String
+  reorderLevel Int     @default(0)
+  unit         String
+  mrp          Decimal @db.Decimal(10, 2)
+  gstPct       Decimal @default(12) @db.Decimal(5, 2)
+  hsnCode      String? @default("3004")
+
+  facility       Facility           @relation(fields: [facilityId], references: [id])
+  batches        DrugBatch[]
+  purchaseItems  PurchaseItem[]
+  ledger         StockLedger[]
+  saleItems      PharmacySaleItem[]
+
+  @@unique([facilityId, name])
+}
+
+// A visit's bills: the OPD consultation fee (kind opd_fee, paid up front) and the rest (kind final).
+model Bill {
+  id             String    @id @default(dbgenerated("(gen_random_uuid())::text"))
+  facilityId     String
+  // BILL-1001 ... per hospital (filled by a trigger)
+  billNo         String
+  encounterId    String
+  patientId      String
+  // draft | finalized | paid | void
+  status         String    @default("draft")
+  // opd_fee | final
+  kind           String    @default("final")
+  paymentMode    String?
+  paidAt         DateTime? @db.Timestamptz(3)
+  paymentId      String?
+  // the fee a doctor's consultation was raised at, before any panel rate or discount
+  standardFee    Decimal?  @db.Decimal(10, 2)
+  panelId        String?
+  panelName      String?
+  beneficiaryId  String?
+  discountType   String?
+  discountValue  Decimal?  @db.Decimal(12, 2)
+  discountReason String?
+  createdAt      DateTime  @default(now()) @db.Timestamptz(3)
+
+  facility    Facility    @relation(fields: [facilityId], references: [id])
+  encounter   Encounter   @relation(fields: [encounterId], references: [id])
+  patient     Patient     @relation(fields: [patientId], references: [id])
+  payment     OpdPayment? @relation(fields: [paymentId], references: [id])
+  panel       Panel?      @relation(fields: [panelId], references: [id])
+  items       BillItem[]
+  ipdPayments IpdPayment[]
+
+  @@unique([facilityId, billNo])
+  @@unique([encounterId, kind])
+  @@index([paymentId])
+}
+
+model BillItem {
+  id         String  @id @default(dbgenerated("(gen_random_uuid())::text"))
+  facilityId String
+  billId     String
+  label      String
+  qty        Int
+  rate       Decimal @db.Decimal(12, 2)
+  gstPct     Decimal @default(0) @db.Decimal(5, 2)
+  // keeps the order lines were written in (the consultation first, then any discount)
+  lineNo     BigInt  @default(autoincrement())
+  // a discount line (negative), rebuilt whenever the bill changes
+  isDiscount Boolean @default(false)
+
+  bill Bill @relation(fields: [billId], references: [id], onDelete: Cascade)
+
+  @@index([billId])
+}
+
+// ---- Operations: supplies, bio-medical waste, attendance, roster, payroll -------------------------------------------
+model Supply {
+  id              String   @id @default(dbgenerated("(gen_random_uuid())::text"))
+  facilityId      String
+  name            String
+  category        String
+  unit            String
+  stock           Int      @default(0)
+  reorderLevel    Int      @default(0)
+  location        String
+  lastRestockedAt DateTime @default(now()) @db.Timestamptz(3)
+  createdAt       DateTime @default(now()) @db.Timestamptz(3)
+
+  facility Facility    @relation(fields: [facilityId], references: [id])
+  log      SupplyLog[]
+
+  @@unique([facilityId, name, location])
+}
+
+model SupplyLog {
+  id         BigInt   @id @default(autoincrement())
+  facilityId String
+  supplyId   String
+  // issue | restock
+  type       String
+  qty        Int
+  department String
+  at         DateTime @default(now()) @db.Timestamptz(3)
+  by         String
+
+  supply Supply @relation(fields: [supplyId], references: [id])
+
+  @@index([supplyId, at(sort: Desc)])
+  @@index([facilityId, at(sort: Desc)])
+}
+
+// Bio-medical waste (CPCB BMW Rules 2016). A batch moves one way: segregated -> stored -> (pretreated) -> disposed.
+model WasteBatch {
+  id                 String    @id @default(dbgenerated("(gen_random_uuid())::text"))
+  facilityId         String
+  category           String
+  department         String
+  weightKg           Decimal   @db.Decimal(8, 2)
+  stage              String    @default("segregated")
+  segregatedAt       DateTime  @default(now()) @db.Timestamptz(3)
+  segregatedBy       String
+  storageLocation    String?
+  storedAt           DateTime? @db.Timestamptz(3)
+  pretreatmentMethod String?
+  pretreatedAt       DateTime? @db.Timestamptz(3)
+  pretreatedBy       String?
+  disposalVendor     String?
+  manifestNo         String?
+  disposedAt         DateTime? @db.Timestamptz(3)
+  disposedBy         String?
+
+  facility Facility @relation(fields: [facilityId], references: [id])
+
+  @@index([facilityId, stage, segregatedAt(sort: Desc)])
+}
+
+// What actually happened, per shift (a date can hold a double shift)
+model Attendance {
+  id         String   @id @default(dbgenerated("(gen_random_uuid())::text"))
+  facilityId String
+  staffId    String
+  date       DateTime @db.Date
+  shift      String
+  status     String
+
+  staff Staff @relation(fields: [staffId], references: [id])
+
+  @@unique([staffId, date, shift])
+  @@index([facilityId, date])
+}
+
+// The plan (who is scheduled), as distinct from attendance
+model RosterEntry {
+  id         String   @id @default(dbgenerated("(gen_random_uuid())::text"))
+  facilityId String
+  staffId    String
+  date       DateTime @db.Date
+  shift      String
+  department String
+
+  staff Staff @relation(fields: [staffId], references: [id])
+
+  @@unique([staffId, date, shift])
+  @@index([facilityId, date])
+}
+
+// One run per month: draft -> finalized -> paid. Lines are a snapshot, so later changes never rewrite a payslip.
+model PayrollRun {
+  id          String   @id @default(dbgenerated("(gen_random_uuid())::text"))
+  facilityId  String
+  month       String
+  status      String   @default("draft")
+  generatedAt DateTime @default(now()) @db.Timestamptz(3)
+  generatedBy String
+
+  facility Facility      @relation(fields: [facilityId], references: [id])
+  lines    PayrollLine[]
+
+  @@unique([facilityId, month])
+}
+
+model PayrollLine {
+  runId           String
+  staffId         String
+  facilityId      String
+  staffName       String
+  role            String
+  employmentType  String
+  daysPresent     Decimal @default(0) @db.Decimal(5, 1)
+  doubleShiftDays Int     @default(0)
+  workingDays     Int     @default(0)
+  consultCount    Int     @default(0)
+  grossPay        Decimal @default(0) @db.Decimal(12, 2)
+  deductions      Decimal @default(0) @db.Decimal(12, 2)
+  netPay          Decimal @default(0) @db.Decimal(12, 2)
+
+  run   PayrollRun @relation(fields: [runId], references: [id], onDelete: Cascade)
+  staff Staff      @relation(fields: [staffId], references: [id])
+
+  @@id([runId, staffId])
+}
+
+// ---- OPD billing: the OPD invoice (and receipt), panels and their rates ----------------------------------------------
+model OpdPayment {
+  id              String    @id @default(dbgenerated("(gen_random_uuid())::text"))
+  facilityId      String
+  // OPD-1001 ... per hospital (filled by a trigger)
+  receiptNo       String
+  patientId       String
+  mode            String
+  reference       String?
+  amount          Decimal   @db.Decimal(12, 2)
+  amountReceived  Decimal?  @db.Decimal(12, 2)
+  collectedById   String?
+  collectedByName String
+  collectedAt     DateTime  @default(now()) @db.Timestamptz(3)
+  panelId         String?
+  panelName       String?
+  beneficiaryId   String?
+  grossAmount     Decimal?  @db.Decimal(12, 2)
+  discountAmount  Decimal   @default(0) @db.Decimal(12, 2)
+  discountType    String?
+  discountValue   Decimal?  @db.Decimal(10, 2)
+  discountReason  String?
+  // paid | cancelled
+  status          String    @default("paid")
+  cancelledAt     DateTime? @db.Timestamptz(3)
+  cancelledByName String?
+  cancelReason    String?
+  refundAmount    Decimal?  @db.Decimal(12, 2)
+  refundMode      String?
+  refundReference String?
+
+  facility    Facility @relation(fields: [facilityId], references: [id])
+  patient     Patient  @relation(fields: [patientId], references: [id])
+  collectedBy Staff?   @relation(fields: [collectedById], references: [id])
+  panel       Panel?   @relation(fields: [panelId], references: [id])
+  bills       Bill[]
+
+  @@unique([facilityId, receiptNo])
+  @@index([facilityId, collectedAt])
+  @@index([patientId])
+  @@index([facilityId, status])
+}
+
+// Organisations whose beneficiaries get special rates (CGHS, DGHS, insurers ...). No rates are built in.
+model Panel {
+  id                    String   @id @default(dbgenerated("(gen_random_uuid())::text"))
+  facilityId            String
+  code                  String
+  name                  String
+  category              String   @default("other")
+  discountPct           Decimal  @default(0) @db.Decimal(5, 2)
+  flatFee               Decimal? @db.Decimal(10, 2)
+  requiresBeneficiaryId Boolean  @default(true)
+  active                Boolean  @default(true)
+  createdAt             DateTime @default(now()) @db.Timestamptz(3)
+
+  facility    Facility        @relation(fields: [facilityId], references: [id])
+  rates       PanelRate[]
+  itemRates   PanelItemRate[]
+  encounters  Encounter[]
+  bills       Bill[]
+  opdPayments OpdPayment[]
+  labInvoices LabInvoice[]
+
+  @@unique([facilityId, code])
+}
+
+model PanelRate {
+  panelId    String
+  facilityId String
+  department String
+  fee        Decimal @db.Decimal(10, 2)
+
+  panel Panel @relation(fields: [panelId], references: [id], onDelete: Cascade)
+
+  @@id([panelId, department])
+}
+
+// ---- Masters: services and ward bed charges, investigations, panel item rates, prescription templates -----------------
+model Service {
+  id         String   @id @default(dbgenerated("(gen_random_uuid())::text"))
+  facilityId String
+  code       String
+  name       String
+  // bed | nursing | procedure | doctor_visit | consultation | package | other
+  category   String
+  ward       String?
+  price      Decimal  @db.Decimal(12, 2)
+  gstPct     Decimal  @default(0) @db.Decimal(5, 2)
+  active     Boolean  @default(true)
+  createdAt  DateTime @default(now()) @db.Timestamptz(3)
+  updatedAt  DateTime @default(now()) @db.Timestamptz(3)
+
+  facility   Facility    @relation(fields: [facilityId], references: [id])
+  ipdCharges IpdCharge[]
+
+  @@unique([facilityId, code])
+}
+
+model Investigation {
+  id         String   @id @default(dbgenerated("(gen_random_uuid())::text"))
+  facilityId String
+  code       String
+  name       String
+  // lab | radiology
+  kind       String
+  section    String?
+  sample     String?
+  tatHours   Int?
+  price      Decimal  @db.Decimal(12, 2)
+  gstPct     Decimal  @default(0) @db.Decimal(5, 2)
+  active     Boolean  @default(true)
+  createdAt  DateTime @default(now()) @db.Timestamptz(3)
+  updatedAt  DateTime @default(now()) @db.Timestamptz(3)
+
+  facility   Facility                 @relation(fields: [facilityId], references: [id])
+  parameters InvestigationParameter[]
+  orders     ClinicalOrder[]
+
+  @@unique([facilityId, code])
+}
+
+// What a lab test measures, with its normal and critical ranges
+model InvestigationParameter {
+  id              String   @id @default(dbgenerated("(gen_random_uuid())::text"))
+  facilityId      String
+  investigationId String
+  name            String
+  unit            String?
+  refLow          Decimal? @db.Decimal(12, 3)
+  refHigh         Decimal? @db.Decimal(12, 3)
+  refText         String?
+  sortOrder       Int      @default(0)
+  criticalLow     Decimal? @db.Decimal(12, 3)
+  criticalHigh    Decimal? @db.Decimal(12, 3)
+
+  investigation Investigation @relation(fields: [investigationId], references: [id], onDelete: Cascade)
+  results       OrderResult[]
+
+  @@index([investigationId, sortOrder])
+}
+
+model PanelItemRate {
+  panelId    String
+  facilityId String
+  // service | investigation
+  itemKind   String
+  itemId     String
+  rate       Decimal @db.Decimal(12, 2)
+
+  panel Panel @relation(fields: [panelId], references: [id], onDelete: Cascade)
+
+  @@id([panelId, itemKind, itemId])
+}
+
+// A doctor's saved set of medicines, or one shared with every doctor (staffId empty)
+model RxTemplate {
+  id         String   @id @default(dbgenerated("(gen_random_uuid())::text"))
+  facilityId String
+  name       String
+  staffId    String?
+  diagnosis  String?
+  items      Json     @default("[]")
+  createdAt  DateTime @default(now()) @db.Timestamptz(3)
+
+  facility Facility @relation(fields: [facilityId], references: [id])
+  staff    Staff?   @relation(fields: [staffId], references: [id], onDelete: Cascade)
+}
+
+// ---- Inpatient: bed stays, live charges, advances and refunds, births, documents --------------------------------------
+model BedStay {
+  id          String    @id @default(dbgenerated("(gen_random_uuid())::text"))
+  facilityId  String
+  encounterId String
+  bedId       String
+  ward        String
+  bedNo       String
+  fromAt      DateTime  @db.Timestamptz(3)
+  toAt        DateTime? @db.Timestamptz(3)
+
+  encounter Encounter @relation(fields: [encounterId], references: [id], onDelete: Cascade)
+  bed       Bed       @relation(fields: [bedId], references: [id])
+
+  @@index([encounterId, fromAt])
+}
+
+// A charge is never deleted, only voided with a reason. One bed charge per bed day.
+model IpdCharge {
+  id           String    @id @default(dbgenerated("(gen_random_uuid())::text"))
+  facilityId   String
+  encounterId  String
+  chargeDate   DateTime  @db.Date
+  // bed | service | custom
+  kind         String
+  serviceId    String?
+  description  String
+  qty          Int       @default(1)
+  standardRate Decimal   @db.Decimal(12, 2)
+  rate         Decimal   @db.Decimal(12, 2)
+  gstPct       Decimal   @default(0) @db.Decimal(5, 2)
+  rateNote     String?
+  postedBy     String
+  postedAt     DateTime  @default(now()) @db.Timestamptz(3)
+  voided       Boolean   @default(false)
+  voidReason   String?
+  voidedBy     String?
+  voidedAt     DateTime? @db.Timestamptz(3)
+
+  encounter Encounter @relation(fields: [encounterId], references: [id], onDelete: Cascade)
+  service   Service?  @relation(fields: [serviceId], references: [id])
+
+  @@index([encounterId, chargeDate])
+}
+
+model IpdPayment {
+  id           String    @id @default(dbgenerated("(gen_random_uuid())::text"))
+  facilityId   String
+  receiptNo    String
+  encounterId  String
+  patientId    String
+  // advance | refund | settlement
+  kind         String
+  amount       Decimal   @db.Decimal(12, 2)
+  mode         String
+  reference    String?
+  note         String?
+  billId       String?
+  receivedBy   String
+  at           DateTime  @default(now()) @db.Timestamptz(3)
+  cancelled    Boolean   @default(false)
+  cancelReason String?
+  cancelledBy  String?
+  cancelledAt  DateTime? @db.Timestamptz(3)
+
+  facility  Facility  @relation(fields: [facilityId], references: [id])
+  encounter Encounter @relation(fields: [encounterId], references: [id])
+  patient   Patient   @relation(fields: [patientId], references: [id])
+  bill      Bill?     @relation(fields: [billId], references: [id])
+
+  @@unique([facilityId, receiptNo])
+  @@index([encounterId, at])
+}
+
+model Birth {
+  id                String   @id @default(dbgenerated("(gen_random_uuid())::text"))
+  facilityId        String
+  // BR-1 ... per hospital (filled by a trigger)
+  birthNo           String
+  motherEncounterId String
+  motherPatientId   String
+  babyName          String?
+  gender            String
+  bornAt            DateTime @db.Timestamptz(3)
+  weightGrams       Int?
+  deliveryType      String
+  fatherName        String?
+  attendedBy        String?
+  notes             String?
+  recordedBy        String
+  createdAt         DateTime @default(now()) @db.Timestamptz(3)
+
+  facility        Facility  @relation(fields: [facilityId], references: [id])
+  motherEncounter Encounter @relation(fields: [motherEncounterId], references: [id])
+  mother          Patient   @relation(fields: [motherPatientId], references: [id])
+
+  @@unique([facilityId, birthNo])
+  @@index([motherEncounterId])
+}
+
+// Consents, outside reports, scans attached to a visit or stay
+model EncounterDocument {
+  id           String    @id @default(dbgenerated("(gen_random_uuid())::text"))
+  facilityId   String
+  encounterId  String
+  patientId    String
+  kind         String
+  title        String
+  fileName     String
+  contentType  String
+  sizeBytes    Int
+  storageKey   String
+  uploadedBy   String
+  uploadedAt   DateTime  @default(now()) @db.Timestamptz(3)
+  removed      Boolean   @default(false)
+  removedBy    String?
+  removedAt    DateTime? @db.Timestamptz(3)
+  removeReason String?
+
+  encounter Encounter @relation(fields: [encounterId], references: [id], onDelete: Cascade)
+  patient   Patient   @relation(fields: [patientId], references: [id])
+
+  @@index([encounterId, uploadedAt])
+}
+
+// ---- Text messages and one-time codes (simulator until an SMS provider is chosen) -----------------------------------
+model SmsOutbox {
+  id         String   @id @default(dbgenerated("(gen_random_uuid())::text"))
+  facilityId String
+  toPhone    String
+  body       String
+  purpose    String
+  provider   String
+  status     String   @default("sent")
+  createdAt  DateTime @default(now()) @db.Timestamptz(3)
+
+  @@index([facilityId, createdAt(sort: Desc)])
+}
+
+model OtpChallenge {
+  id         String   @id @default(dbgenerated("(gen_random_uuid())::text"))
+  facilityId String
+  phone      String
+  purpose    String
+  codeHash   String
+  expiresAt  DateTime @db.Timestamptz(3)
+  attempts   Int      @default(0)
+  consumed   Boolean  @default(false)
+  createdAt  DateTime @default(now()) @db.Timestamptz(3)
+
+  @@index([facilityId, phone, purpose, createdAt(sort: Desc)])
+}
+
+// ---- Pharmacy: suppliers, purchases, batch-wise stock, the stock ledger, sales, the ward medicine round ----------------
+model Supplier {
+  id          String   @id @default(dbgenerated("(gen_random_uuid())::text"))
+  facilityId  String
+  name        String
+  gstin       String?
+  phone       String?
+  address     String?
+  drugLicense String?
+  active      Boolean  @default(true)
+  createdAt   DateTime @default(now()) @db.Timestamptz(3)
+
+  facility  Facility   @relation(fields: [facilityId], references: [id])
+  purchases Purchase[]
+}
+
+model Purchase {
+  id                String    @id @default(dbgenerated("(gen_random_uuid())::text"))
+  facilityId        String
+  // PUR-1 ... per hospital (filled by a trigger)
+  purchaseNo        String
+  supplierId        String
+  supplierInvoiceNo String
+  invoiceDate       DateTime  @db.Date
+  taxable           Decimal   @default(0) @db.Decimal(14, 2)
+  gstTotal          Decimal   @default(0) @db.Decimal(14, 2)
+  total             Decimal   @default(0) @db.Decimal(14, 2)
+  amountPaid        Decimal   @default(0) @db.Decimal(14, 2)
+  paymentMode       String?
+  paymentReference  String?
+  notes             String?
+  // received | cancelled
+  status            String    @default("received")
+  cancelReason      String?
+  cancelledBy       String?
+  cancelledAt       DateTime? @db.Timestamptz(3)
+  createdBy         String
+  createdAt         DateTime  @default(now()) @db.Timestamptz(3)
+
+  facility Facility       @relation(fields: [facilityId], references: [id])
+  supplier Supplier       @relation(fields: [supplierId], references: [id])
+  items    PurchaseItem[]
+
+  @@unique([facilityId, purchaseNo])
+  @@index([facilityId, invoiceDate(sort: Desc)])
+}
+
+model DrugBatch {
+  id           String   @id @default(dbgenerated("(gen_random_uuid())::text"))
+  facilityId   String
+  drugId       String
+  batchNo      String
+  expiry       DateTime @db.Date
+  qty          Int      @default(0)
+  mrp          Decimal  @db.Decimal(10, 2)
+  // what the hospital paid per unit before GST; unknown for stock entered without a purchase
+  purchaseRate Decimal? @db.Decimal(12, 4)
+  receivedAt   DateTime @default(now()) @db.Timestamptz(3)
+
+  drug          Drug               @relation(fields: [drugId], references: [id])
+  purchaseItems PurchaseItem[]
+  ledger        StockLedger[]
+  saleItems     PharmacySaleItem[]
+
+  @@unique([drugId, batchNo])
+  @@index([drugId, expiry])
+}
+
+model PurchaseItem {
+  id           String   @id @default(dbgenerated("(gen_random_uuid())::text"))
+  facilityId   String
+  purchaseId   String
+  drugId       String
+  batchId      String
+  batchNo      String
+  expiry       DateTime @db.Date
+  qty          Int
+  freeQty      Int      @default(0)
+  purchaseRate Decimal  @db.Decimal(12, 4)
+  mrp          Decimal  @db.Decimal(10, 2)
+  gstPct       Decimal  @db.Decimal(5, 2)
+  taxable      Decimal  @db.Decimal(14, 2)
+  gstAmount    Decimal  @db.Decimal(14, 2)
+
+  purchase Purchase  @relation(fields: [purchaseId], references: [id], onDelete: Cascade)
+  drug     Drug      @relation(fields: [drugId], references: [id])
+  batch    DrugBatch @relation(fields: [batchId], references: [id])
+
+  @@index([purchaseId])
+}
+
+// Every change to a batch's quantity, with why. Stock is never edited without a line here.
+model StockLedger {
+  id         BigInt   @id @default(autoincrement())
+  facilityId String
+  at         DateTime @default(now()) @db.Timestamptz(3)
+  batchId    String
+  drugId     String
+  delta      Int
+  // opening | purchase | purchase_cancel | sale | dispense | sale_cancel | adjustment
+  kind       String
+  refId      String?
+  reason     String?
+  by         String
+
+  batch DrugBatch @relation(fields: [batchId], references: [id])
+  drug  Drug      @relation(fields: [drugId], references: [id])
+
+  @@index([batchId, at])
+}
+
+// A counter sale (walk-in or patient) or a dispense against a visit (billed on the visit's bill)
+model PharmacySale {
+  id               String    @id @default(dbgenerated("(gen_random_uuid())::text"))
+  facilityId       String
+  // counter | encounter
+  kind             String
+  invoiceNo        String
+  encounterId      String?
+  patientId        String?
+  customerName     String?
+  customerPhone    String?
+  discountPct      Decimal   @default(0) @db.Decimal(5, 2)
+  taxable          Decimal   @default(0) @db.Decimal(14, 2)
+  tax              Decimal   @default(0) @db.Decimal(14, 2)
+  total            Decimal   @default(0) @db.Decimal(14, 2)
+  paymentMode      String?
+  paymentReference String?
+  amountReceived   Decimal?  @db.Decimal(14, 2)
+  // paid | cancelled
+  status           String    @default("paid")
+  soldBy           String
+  soldAt           DateTime  @default(now()) @db.Timestamptz(3)
+  cancelledAt      DateTime? @db.Timestamptz(3)
+  cancelReason     String?
+  cancelledBy      String?
+
+  facility  Facility           @relation(fields: [facilityId], references: [id])
+  encounter Encounter?         @relation(fields: [encounterId], references: [id])
+  patient   Patient?           @relation(fields: [patientId], references: [id])
+  items     PharmacySaleItem[]
+
+  @@unique([facilityId, invoiceNo])
+  @@index([facilityId, soldAt(sort: Desc)])
+  @@index([encounterId])
+}
+
+model PharmacySaleItem {
+  id             String    @id @default(dbgenerated("(gen_random_uuid())::text"))
+  facilityId     String
+  saleId         String
+  drugId         String?
+  batchId        String?
+  prescriptionId String?
+  drugName       String
+  batchNo        String?
+  expiry         DateTime? @db.Date
+  hsnCode        String    @default("3004")
+  qty            Int
+  mrp            Decimal   @db.Decimal(10, 2)
+  gstPct         Decimal   @db.Decimal(5, 2)
+  // MRP includes GST: the line total is what the patient pays; the taxable value and tax are what it splits into
+  lineTotal      Decimal   @db.Decimal(14, 2)
+  taxable        Decimal   @db.Decimal(14, 2)
+  tax            Decimal   @db.Decimal(14, 2)
+  // purchase rate x qty, when the batch's purchase rate is known
+  cost           Decimal?  @db.Decimal(14, 2)
+
+  sale         PharmacySale  @relation(fields: [saleId], references: [id], onDelete: Cascade)
+  drug         Drug?         @relation(fields: [drugId], references: [id])
+  batch        DrugBatch?    @relation(fields: [batchId], references: [id])
+  prescription Prescription? @relation(fields: [prescriptionId], references: [id])
+
+  @@index([saleId])
+}
+
+// The ward medicine round: when each dose of a prescribed medicine is due, and who gave it
+model MedicationSchedule {
+  id             String    @id @default(dbgenerated("(gen_random_uuid())::text"))
+  facilityId     String
+  encounterId    String
+  prescriptionId String
+  times          String[]
+  startDate      DateTime  @db.Date
+  endDate        DateTime? @db.Date
+  instructions   String?
+  // active | stopped
+  status         String    @default("active")
+  createdBy      String
+  createdAt      DateTime  @default(now()) @db.Timestamptz(3)
+  stoppedBy      String?
+  stoppedAt      DateTime? @db.Timestamptz(3)
+
+  encounter    Encounter        @relation(fields: [encounterId], references: [id], onDelete: Cascade)
+  prescription Prescription     @relation(fields: [prescriptionId], references: [id], onDelete: Cascade)
+  doses        MedicationDose[]
+}
+
+model MedicationDose {
+  id         String    @id @default(dbgenerated("(gen_random_uuid())::text"))
+  facilityId String
+  scheduleId String
+  dueAt      DateTime  @db.Timestamptz(3)
+  // due | given | missed | held
+  status     String    @default("due")
+  actedAt    DateTime? @db.Timestamptz(3)
+  actedBy    String?
+  note       String?
+
+  schedule MedicationSchedule @relation(fields: [scheduleId], references: [id], onDelete: Cascade)
+
+  @@unique([scheduleId, dueAt])
+}
+
+// ---- Laboratory and radiology ---------------------------------------------------------------------------------------
+// Invoice for tests ordered at the lab desk (no visit)
+model LabInvoice {
+  id               String    @id @default(dbgenerated("(gen_random_uuid())::text"))
+  facilityId       String
+  invoiceNo        String
+  patientId        String
+  panelId          String?
+  panelName        String?
+  beneficiaryId    String?
+  discountPct      Decimal   @default(0) @db.Decimal(5, 2)
+  subtotal         Decimal   @default(0) @db.Decimal(14, 2)
+  discount         Decimal   @default(0) @db.Decimal(14, 2)
+  gstTotal         Decimal   @default(0) @db.Decimal(14, 2)
+  total            Decimal   @default(0) @db.Decimal(14, 2)
+  paymentMode      String
+  paymentReference String?
+  amountReceived   Decimal?  @db.Decimal(14, 2)
+  referredBy       String?
+  // paid | cancelled
+  status           String    @default("paid")
+  createdBy        String
+  createdAt        DateTime  @default(now()) @db.Timestamptz(3)
+  cancelledAt      DateTime? @db.Timestamptz(3)
+  cancelReason     String?
+  cancelledBy      String?
+
+  facility Facility         @relation(fields: [facilityId], references: [id])
+  patient  Patient          @relation(fields: [patientId], references: [id])
+  panel    Panel?           @relation(fields: [panelId], references: [id])
+  items    LabInvoiceItem[]
+  orders   ClinicalOrder[]
+
+  @@unique([facilityId, invoiceNo])
+  @@index([facilityId, createdAt(sort: Desc)])
+  @@index([patientId])
+}
+
+model LabInvoiceItem {
+  id           String  @id @default(dbgenerated("(gen_random_uuid())::text"))
+  facilityId   String
+  invoiceId    String
+  orderId      String  @unique
+  name         String
+  standardRate Decimal @db.Decimal(12, 2)
+  rate         Decimal @db.Decimal(12, 2)
+  gstPct       Decimal @default(0) @db.Decimal(5, 2)
+  amount       Decimal @db.Decimal(14, 2)
+
+  invoice LabInvoice    @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
+  order   ClinicalOrder @relation(fields: [orderId], references: [id])
+
+  @@index([invoiceId])
+}
+
+// One row per thing measured. The test's definition is copied in, so a report never changes if the master is edited.
+model OrderResult {
+  id           String   @id @default(dbgenerated("(gen_random_uuid())::text"))
+  facilityId   String
+  orderId      String
+  parameterId  String?
+  name         String
+  unit         String?
+  refLow       Decimal? @db.Decimal(12, 3)
+  refHigh      Decimal? @db.Decimal(12, 3)
+  refText      String?
+  criticalLow  Decimal? @db.Decimal(12, 3)
+  criticalHigh Decimal? @db.Decimal(12, 3)
+  valueText    String
+  valueNum     Decimal? @db.Decimal(14, 4)
+  flag         String?
+  sortOrder    Int      @default(0)
+
+  order     ClinicalOrder           @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  parameter InvestigationParameter? @relation(fields: [parameterId], references: [id], onDelete: SetNull)
+
+  @@index([orderId, sortOrder])
+}
+
+// A signed report is never overwritten: a correction keeps what was there, who changed it and why
+model ReportAmendment {
+  id         String   @id @default(dbgenerated("(gen_random_uuid())::text"))
+  facilityId String
+  orderId    String
+  reason     String
+  amendedBy  String
+  amendedAt  DateTime @default(now()) @db.Timestamptz(3)
+  previous   Json
+
+  order ClinicalOrder @relation(fields: [orderId], references: [id], onDelete: Cascade)
+
+  @@index([orderId, amendedAt])
+}
+
+model OrderAttachment {
+  id           String    @id @default(dbgenerated("(gen_random_uuid())::text"))
+  facilityId   String
+  orderId      String
+  title        String
+  fileName     String
+  contentType  String
+  sizeBytes    Int
+  storageKey   String
+  uploadedBy   String
+  uploadedAt   DateTime  @default(now()) @db.Timestamptz(3)
+  removed      Boolean   @default(false)
+  removedBy    String?
+  removedAt    DateTime? @db.Timestamptz(3)
+  removeReason String?
+
+  order ClinicalOrder @relation(fields: [orderId], references: [id], onDelete: Cascade)
+
+  @@index([orderId, uploadedAt])
+}

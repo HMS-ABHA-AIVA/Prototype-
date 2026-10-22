@@ -1,0 +1,68 @@
+services:
+  - type: web
+    runtime: node
+    name: hms-api
+    rootDir: backend
+    buildCommand: npm ci --include=dev && npm run build
+    preDeployCommand: npx prisma migrate deploy
+    startCommand: npm start
+    healthCheckPath: /health
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: DATABASE_URL
+        sync: false
+      - key: FRONTEND_URL
+        sync: false
+      - key: FACILITY_ACCESS_TOKEN_SECRET
+        sync: false
+      - key: FACILITY_REFRESH_TOKEN_SECRET
+        sync: false
+      - key: USER_ACCESS_TOKEN_SECRET
+        sync: false
+      - key: USER_REFRESH_TOKEN_SECRET
+        sync: false
+      - key: ABDM_ENCRYPTION_KEY
+        sync: false
+      - key: SANDBOX_SESSION_URL
+        sync: false
+      - key: PROD_SESSION_URL
+        sync: false
+
+  - type: web
+    runtime: static
+    name: hms-frontend
+    rootDir: frontend
+    buildCommand: npm ci && npm run build
+    staticPublishPath: dist
+    headers:
+      - path: /*
+        name: X-Frame-Options
+        value: DENY
+      - path: /*
+        name: X-Content-Type-Options
+        value: nosniff
+      - path: /*
+        name: Referrer-Policy
+        value: no-referrer
+      - path: /*
+        name: Strict-Transport-Security
+        value: max-age=31536000; includeSubDomains
+      - path: /*
+        name: Permissions-Policy
+        value: camera=(), microphone=(), geolocation=()
+      - path: /*
+        name: Content-Security-Policy
+        value: frame-ancestors 'none'
+      - path: /index.html
+        name: Cache-Control
+        value: no-store
+    envVars:
+      - key: VITE_API_URL
+        sync: false
+      - key: VITE_ABDM_ENVIRONMENT
+        value: SANDBOX
+    routes:
+      - type: rewrite
+        source: /*
+        destination: /index.html

@@ -1,0 +1,301 @@
+/* =====================================================================
+   Hospital modules (merged from AIVA OSHealth)
+   The OSHealth screens keep their own layout classes, drawn with the application's design tokens (hms.css). Everything is
+   scoped to `.os-page`, the wrapper around those screens, so these rules never change the M1 screens, and the class names
+   both stylesheets use (.card, .btn, .badge, .table, .field, .row, .steps ...) mean OSHealth's version only inside it.
+   ===================================================================== */
+
+/* ---------- OSHealth's colour names, mapped to the application's tokens ---------- */
+.os-page {
+  --ink: var(--text);
+  --ink-soft: var(--text-2);
+  --brand: var(--primary);
+  --brand-soft: var(--primary-soft);
+  --brand-dark: var(--primary-hover);
+  --navy: var(--nav-bg);
+  --navy-light: var(--nav-bg-2);
+  --danger-soft: var(--danger-bg);
+  --warn: var(--warning);
+  --warn-soft: var(--warning-bg);
+  --success-soft: var(--success-bg);
+  --info-soft: var(--info-bg);
+  --ai: #6d4fc2;
+  --ai-soft: #f1edfb;
+  --radius: var(--r-lg);
+  --shadow: var(--shadow-1);
+  color: var(--text);
+  font-size: 13.5px;
+}
+
+/* ---------- Form controls (OSHealth styles bare elements) ---------- */
+.os-page input:not([type="checkbox"]):not([type="radio"]):not([type="range"]):not([type="file"]),
+.os-page select,
+.os-page textarea {
+  font-family: inherit;
+  font-size: 13.5px;
+  width: 100%;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--r-md);
+  padding: 8px 11px;
+  background: var(--surface);
+  color: var(--text);
+  transition: border-color 0.12s ease, box-shadow 0.12s ease;
+}
+.os-page input:not([type="checkbox"]):not([type="radio"]):hover,
+.os-page select:hover,
+.os-page textarea:hover { border-color: #aeb9c5; }
+.os-page input:focus,
+.os-page select:focus,
+.os-page textarea:focus { outline: none; border-color: var(--focus); box-shadow: 0 0 0 3px rgba(27, 127, 163, 0.16); }
+.os-page input:disabled,
+.os-page select:disabled,
+.os-page textarea:disabled { background: var(--surface-2); color: var(--text-2); cursor: not-allowed; }
+.os-page input[type="checkbox"],
+.os-page input[type="radio"] { accent-color: var(--primary); }
+.os-page label {
+  display: block;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-2);
+  margin-bottom: 5px;
+}
+.os-page .field { margin-bottom: 14px; }
+.os-page h1, .os-page h2, .os-page h3, .os-page h4 { margin: 0; font-weight: 600; color: var(--text); }
+
+/* ---------- Page heading (OSHealth's ".topbar") ---------- */
+.os-page .os-head { display: flex; align-items: flex-end; justify-content: space-between; margin-bottom: 18px; gap: 12px; flex-wrap: wrap; }
+.os-page .os-head h1 { font-size: 20px; line-height: 1.3; }
+.os-page .os-head .sub { font-size: 13px; color: var(--text-2); margin-top: 2px; }
+
+/* ---------- Cards ---------- */
+.os-page .card { padding: 16px 18px; margin-bottom: 16px; overflow: visible; }
+.os-page .card + .card { margin-top: 0; }
+.os-page .card h3 { font-size: 14.5px; margin-bottom: 2px; }
+.os-page .card .card-sub { font-size: 12.5px; color: var(--text-2); margin: 0 0 14px; }
+
+.os-page .kpi-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 12px; margin-bottom: 18px; }
+.os-page .kpi { background: var(--surface); border: 1px solid var(--border); border-radius: var(--r-lg); padding: 14px 16px; box-shadow: var(--shadow-1); border-bottom: 3px solid var(--primary); }
+.os-page .kpi .label { font-size: 12px; color: var(--text-2); font-weight: 500; margin-bottom: 6px; }
+.os-page .kpi .value { font-size: 24px; font-weight: 600; font-variant-numeric: tabular-nums; }
+.os-page .kpi .sub { font-size: 12px; color: var(--text-3); margin-top: 4px; }
+
+/* ---------- Buttons: plain .btn is OSHealth's secondary button; .btn-ghost is borderless there ---------- */
+.os-page .btn { height: auto; min-height: 32px; padding: 6px 13px; font-size: 13px; background: var(--surface); border-color: var(--border-strong); color: var(--text); }
+.os-page .btn:hover { background: var(--surface-2); border-color: #b5c0cb; }
+.os-page .btn-primary { background: var(--primary); border-color: var(--primary); color: #fff; }
+.os-page .btn-primary:hover { background: var(--primary-hover); border-color: var(--primary-hover); }
+.os-page .btn-danger { background: var(--danger-bg); border-color: var(--danger-line); color: var(--danger); }
+.os-page .btn-danger:hover { background: #f8dcd9; }
+.os-page .btn-ghost { background: transparent; border-color: transparent; color: var(--text-2); }
+.os-page .btn-ghost:hover { background: var(--surface-3); color: var(--text); }
+.os-page .btn-sm { min-height: 28px; padding: 4px 10px; font-size: 12.5px; }
+.os-page .btn:disabled { opacity: 0.5; cursor: not-allowed; }
+
+/* ---------- Tables ---------- */
+.os-page .table { font-size: 13px; }
+.os-page .table th { position: static; padding: 8px 10px; }
+.os-page .table td { padding: 9px 10px; }
+.os-page .table tr:last-child td { border-bottom: none; }
+.os-page .table tr.clickable:hover td { background: var(--surface-2); cursor: pointer; }
+.os-page .table td.num, .os-page .table th.num { text-align: right; }
+.os-page .table-scroll { overflow-x: auto; }
+
+/* ---------- Badges: OSHealth's tones in the application's style ---------- */
+.os-page .badge { height: 20px; font-size: 11.5px; padding: 0 7px; }
+.os-page .badge.warn { background: var(--warning-bg); border-color: var(--warning-line); color: var(--warning); }
+.os-page .badge.ok { background: var(--success-bg); border-color: var(--success-line); color: var(--success); }
+.os-page .badge.neutral { background: var(--neutral-bg); border-color: var(--border); color: var(--text-2); }
+.os-page .badge.brand { background: var(--primary-soft); border-color: var(--primary-line); color: var(--primary); }
+.os-page .badge.black { background: #1f2937; border-color: #1f2937; color: #fff; }
+
+/* ---------- Layout helpers ---------- */
+.os-page .grid-2 { display: grid; grid-template-columns: 1.3fr 1fr; gap: 16px; }
+.os-page .two-col { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+.os-page .three-col { display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; }
+.os-page .flex-between { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.os-page .stack { display: flex; flex-direction: column; gap: 10px; }
+.os-page .row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.os-page .row > .field { flex: initial; }
+.os-page .empty-state { text-align: center; padding: 32px 20px; color: var(--text-2); font-size: 13px; }
+.os-page .mono { font-family: var(--mono); }
+@media (max-width: 900px) {
+  .os-page .grid-2, .os-page .two-col, .os-page .three-col { grid-template-columns: 1fr; }
+}
+
+/* ---------- Tabs (the application's look, OSHealth's markup) ---------- */
+.os-page .tabs { margin-bottom: 16px; }
+.os-page .tab { display: inline-block; }
+
+/* ---------- Step bar (dialogs with several steps) ---------- */
+.os-page .steps { display: flex; flex-direction: row; gap: 6px; margin: 0 0 18px; padding: 0; background: none; border: none; position: static; }
+.os-page .step { flex: 1; height: 4px; border-radius: 4px; background: var(--border); }
+.os-page .step.done { background: var(--primary); }
+
+/* ---------- AI suggestions (always a draft a person reviews) ---------- */
+.os-page .ai-block { background: var(--ai-soft); border: 1px solid #ddd3f5; border-radius: var(--r-lg); padding: 16px 18px; margin-bottom: 16px; }
+.os-page .ai-block .ai-head { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; }
+.os-page .ai-block .ai-pill { font-size: 10.5px; font-weight: 700; letter-spacing: 0.4px; color: #fff; background: var(--ai); padding: 3px 9px; border-radius: 20px; }
+.os-page .ai-block textarea { min-height: 160px; font-family: var(--mono); font-size: 12px; line-height: 1.6; }
+.os-page .ai-block .ai-actions { display: flex; gap: 8px; margin-top: 12px; }
+.os-page .ai-block .ai-note { font-size: 11.5px; color: #5b3fa8; margin-top: 8px; }
+.os-page .ai-card { border: 1px solid var(--ai-soft); box-shadow: 0 0 0 3px rgba(109, 79, 194, 0.06); }
+.os-page .ai-hint { font-size: 12px; color: var(--text-2); line-height: 1.5; margin-top: 4px; }
+.os-page .ai-live { color: var(--danger); font-weight: 600; }
+.os-page .ai-result { background: var(--success-bg); border-radius: var(--r-md); padding: 10px 12px; margin-top: 6px; }
+.os-page .ai-preview { background: var(--ai-soft); border-radius: var(--r-lg); padding: 12px; margin-top: 12px; }
+.os-page .ai-disclaimer { font-size: 12px; color: #5b3fa8; margin: 6px 0 10px; line-height: 1.5; }
+.os-page .ai-row { background: var(--surface); border: 1px solid var(--border); border-radius: var(--r-md); padding: 8px 10px; margin-bottom: 8px; }
+.os-page .ai-row.danger { border-color: var(--danger); background: #fff7f7; }
+.os-page .ai-row input, .os-page .ai-row select { padding: 6px 8px; font-size: 12.5px; }
+.os-page .ai-demo-warning { background: var(--warning-bg); border: 1px solid var(--warning-line); color: var(--warning); border-radius: var(--r-md); padding: 8px 12px; margin: 8px 0; font-size: 12.5px; line-height: 1.5; }
+.os-page .mic-live { display: inline-block; width: 9px; height: 9px; border-radius: 50%; background: #fff; margin-right: 4px; animation: mic-pulse 1s ease-in-out infinite; }
+@keyframes mic-pulse { 0%, 100% { opacity: 1; transform: scale(1); } 50% { opacity: 0.35; transform: scale(0.7); } }
+
+/* ---------- Beds and housekeeping ---------- */
+.os-page .bed-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(120px, 1fr)); gap: 12px; }
+.os-page .bed-card { border: 1px solid var(--border); border-radius: var(--r-lg); padding: 12px; text-align: center; background: var(--surface); cursor: pointer; }
+.os-page .bed-card.vacant { border-color: var(--success-line); background: var(--success-bg); }
+.os-page .bed-card.occupied { border-color: var(--info-line); background: var(--info-bg); }
+.os-page .bed-card.dirty { border-color: var(--danger-line); background: var(--danger-bg); }
+.os-page .bed-card.cleaning { border-color: var(--warning-line); background: var(--warning-bg); }
+.os-page .bed-card.reserved { border-color: #b9addf; background: #f4f1fb; border-style: dashed; }
+.os-page .bed-card .bno { font-weight: 700; font-size: 14px; }
+.os-page .bed-card .bst { font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.4px; margin-top: 4px; }
+.os-page .bed-card .bwho { font-size: 11.5px; margin-top: 6px; color: var(--text-2); }
+.os-page .status-legend { display: flex; gap: 18px; flex-wrap: wrap; margin-bottom: 4px; }
+.os-page .status-legend .item { display: flex; align-items: center; gap: 7px; font-size: 12px; color: var(--text-2); }
+.os-page .status-legend .swatch { width: 13px; height: 13px; border-radius: 4px; flex-shrink: 0; }
+.os-page .status-legend .swatch.occupied { background: var(--info); }
+.os-page .status-legend .swatch.dirty { background: var(--danger); }
+.os-page .status-legend .swatch.cleaning { background: var(--warning); }
+.os-page .status-legend .swatch.reserved { background: #6a58a8; }
+.os-page .status-legend .swatch.vacant { background: var(--success); }
+.os-page .task-row { display: flex; align-items: center; gap: 14px; padding: 12px 0; border-bottom: 1px solid var(--border); }
+.os-page .task-row:last-child { border-bottom: none; }
+.os-page .task-row .stripe { width: 5px; height: 36px; border-radius: 4px; flex-shrink: 0; }
+.os-page .task-row .stripe.dirty { background: var(--danger); }
+.os-page .task-row .stripe.cleaning { background: var(--warning); }
+.os-page .task-row .info { flex: 1; min-width: 0; }
+.os-page .task-row .info .bedname { font-weight: 600; font-size: 13.5px; }
+.os-page .task-row .info .meta { font-size: 12px; color: var(--text-2); margin-top: 2px; }
+
+/* ---------- Emergency triage: red immediate, yellow urgent, green non-urgent, black deceased/expectant ---------- */
+.os-page .triage-swatch { width: 13px; height: 13px; border-radius: 50%; flex-shrink: 0; display: inline-block; }
+.os-page .triage-swatch.red { background: var(--danger); }
+.os-page .triage-swatch.yellow { background: #d4a106; }
+.os-page .triage-swatch.green { background: var(--success); }
+.os-page .triage-swatch.black { background: #1f2937; }
+.os-page .er-card { border-radius: var(--r-lg); border: 1px solid var(--border); padding: 14px 16px; margin-bottom: 10px; border-left: 5px solid var(--border); background: var(--surface); box-shadow: var(--shadow-1); }
+.os-page .er-card.red { border-left-color: var(--danger); background: var(--danger-bg); }
+.os-page .er-card.yellow { border-left-color: #d4a106; background: #fdf9e7; }
+.os-page .er-card.green { border-left-color: var(--success); background: var(--success-bg); }
+.os-page .er-card.black { border-left-color: #1f2937; background: #f3f4f6; }
+
+/* ---------- Bio-medical waste colour categories (CPCB BMW Rules 2016) ---------- */
+.os-page .waste-swatch { width: 13px; height: 13px; border-radius: 4px; flex-shrink: 0; display: inline-block; }
+.os-page .waste-swatch.yellow { background: #d4a106; }
+.os-page .waste-swatch.red { background: var(--danger); }
+.os-page .waste-swatch.white { background: #fff; border: 1.5px solid #94a3b8; }
+.os-page .waste-swatch.blue { background: var(--info); }
+.os-page .waste-card { border-radius: var(--r-lg); border: 1px solid var(--border); padding: 14px 16px; margin-bottom: 10px; border-left: 5px solid var(--border); }
+.os-page .waste-card.yellow { border-left-color: #d4a106; background: #fdf9e7; }
+.os-page .waste-card.red { border-left-color: var(--danger); background: var(--danger-bg); }
+.os-page .waste-card.white { border-left-color: #94a3b8; background: #f8fafc; }
+.os-page .waste-card.blue { border-left-color: var(--info); background: var(--info-bg); }
+.os-page .stage-pipeline { display: flex; align-items: center; gap: 4px; margin: 10px 0; }
+.os-page .stage-pipeline .stage { flex: 1; text-align: center; font-size: 10px; text-transform: uppercase; letter-spacing: 0.3px; padding: 5px 4px; border-radius: 5px; background: var(--surface-3); color: var(--text-2); }
+.os-page .stage-pipeline .stage.done { background: var(--primary); color: #fff; }
+.os-page .stage-pipeline .arrow { color: var(--border-strong); font-size: 11px; }
+
+/* ---------- Dialogs ---------- */
+.os-page .modal-overlay { position: fixed; inset: 0; background: rgba(12, 22, 32, 0.45); display: flex; align-items: center; justify-content: center; z-index: 60; padding: 20px; }
+.os-page .modal { background: var(--surface); border-radius: var(--r-lg); padding: 22px 24px; width: 100%; max-width: 560px; max-height: 88vh; overflow-y: auto; box-shadow: var(--shadow-2); }
+.os-page .modal-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 16px; gap: 12px; }
+.os-page .modal-head h3 { font-size: 16px; }
+
+/* ---------- Notices inside the screens ---------- */
+.os-page .login-error { background: var(--danger-bg); border: 1px solid var(--danger-line); color: var(--danger); border-radius: var(--r-md); padding: 9px 12px; font-size: 13px; margin-bottom: 14px; }
+.os-page .login-notice { background: var(--info-bg); border: 1px solid var(--info-line); color: var(--info); border-radius: var(--r-md); padding: 9px 12px; font-size: 13px; margin-bottom: 14px; }
+.os-page .login-help { font-size: 12px; color: var(--text-2); margin-top: 14px; text-align: center; }
+
+/* ---------- Full-screen panels (choosing a new password, the platform console's sign-in) ---------- */
+.os-page .login-wrap { min-height: 100vh; display: flex; align-items: center; justify-content: center; padding: 24px; background: var(--bg); }
+.os-page .login-card { width: 100%; max-width: 400px; background: var(--surface); border-radius: var(--r-lg); padding: 28px; box-shadow: var(--shadow-2); border: 1px solid var(--border); }
+.os-page .login-card .card-sub { font-size: 12.5px; color: var(--text-2); margin-bottom: 14px; }
+
+/* ---------- Drug-name box with suggestions ---------- */
+.os-page .drug-input { position: relative; }
+.os-page .drug-list { position: absolute; left: 0; right: 0; top: 100%; z-index: 30; margin: 2px 0 0; padding: 4px; list-style: none; background: var(--surface); border: 1px solid var(--border); border-radius: var(--r-md); box-shadow: var(--shadow-2); max-height: 320px; overflow-y: auto; }
+.os-page .drug-list li { display: grid; grid-template-columns: 1fr auto; gap: 0 8px; align-items: baseline; padding: 6px 8px; border-radius: var(--r-sm); cursor: pointer; }
+.os-page .drug-list li.active, .os-page .drug-list li:hover { background: var(--primary-soft); }
+.os-page .drug-list li.drug-hint { display: block; font-size: 12px; color: var(--text-2); }
+.os-page .drug-name { font-weight: 500; font-size: 13px; }
+.os-page .drug-kind { font-size: 10px; font-weight: 700; letter-spacing: 0.3px; text-transform: uppercase; color: var(--text-3); }
+.os-page .drug-kind.formulary { color: var(--success); }
+.os-page .drug-kind.generic { color: #5b3fa8; }
+.os-page .drug-detail { grid-column: 1 / -1; font-size: 11.5px; color: var(--text-2); line-height: 1.4; }
+.os-page .drug-flags { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-top: 6px; }
+.os-page .drug-generic { font-size: 12px; color: var(--text-2); }
+
+/* ---------- Several doctors for one patient: picker, grouped OPD billing, appointment slips ---------- */
+.os-page .consult-row { display: flex; gap: 8px; align-items: flex-end; margin-bottom: 8px; }
+.os-page .consult-fee { min-width: 78px; text-align: right; padding-bottom: 8px; }
+.os-page .consult-fee label { display: block; margin-bottom: 6px; }
+.os-page .opd-group { border: 1px solid var(--border); border-radius: var(--r-lg); padding: 10px 14px; margin-top: 10px; background: var(--surface-2); }
+.os-page .opd-group .table { margin: 4px 0; }
+.os-page .slip-summary { background: var(--surface-2); border: 1px solid var(--border); border-radius: var(--r-md); padding: 10px 14px; margin-bottom: 12px; font-size: 13px; line-height: 1.6; }
+.os-page .step-title { margin: 16px 0 8px; font-size: 12px; text-transform: uppercase; letter-spacing: 0.4px; color: var(--text-2); }
+
+/* ---------- Printed documents: prescriptions, slips, invoices, reports (black on white, as printed) ---------- */
+.os-page .rx-actions { display: flex; gap: 8px; margin-bottom: 12px; }
+.os-page .rx-sheet { border: 1px solid var(--border); border-radius: var(--r-md); padding: 22px 26px; background: #fff; color: #111; font-size: 13px; line-height: 1.5; }
+.os-page .rx-head { text-align: center; border-bottom: 2px solid #111; padding-bottom: 10px; margin-bottom: 12px; }
+.os-page .rx-hospital { font-size: 20px; font-weight: 700; }
+.os-page .rx-small { font-size: 11.5px; color: #444; }
+.os-page .rx-meta { display: flex; justify-content: space-between; gap: 16px; margin-bottom: 10px; }
+.os-page .rx-right { text-align: right; }
+.os-page .rx-allergy { background: #fee2e2; border: 1px solid #b91c1c; color: #7f1d1d; border-radius: 4px; padding: 4px 8px; font-weight: 600; margin-bottom: 8px; }
+.os-page .rx-line { margin: 6px 0; }
+.os-page .rx-symbol { font-size: 26px; font-weight: 700; margin: 10px 0 2px; }
+.os-page .rx-table { width: 100%; border-collapse: collapse; margin-bottom: 10px; }
+.os-page .rx-table th, .os-page .rx-table td { border-bottom: 1px solid #ccc; padding: 6px 8px; text-align: left; vertical-align: top; }
+.os-page .rx-table th { font-size: 11px; text-transform: uppercase; letter-spacing: 0.3px; color: #444; }
+.os-page .rx-sign { display: flex; justify-content: space-between; align-items: flex-end; gap: 24px; margin-top: 46px; }
+.os-page .rx-sign-line { min-width: 200px; border-top: 1px solid #111; padding-top: 4px; text-align: center; }
+.os-page .slip { border: 1px dashed #98a2b3; border-radius: var(--r-md); padding: 18px 22px; margin-bottom: 14px; background: #fff; color: #111; font-size: 13px; }
+.os-page .slip-title { margin-top: 8px; font-weight: 700; letter-spacing: 1px; font-size: 13px; }
+.os-page .slip-token { text-align: center; margin: 10px 0; }
+.os-page .slip-token-no { font-size: 40px; font-weight: 700; line-height: 1.1; }
+.os-page .slip-table { width: 100%; border-collapse: collapse; }
+.os-page .slip-table td { padding: 4px 6px; border-bottom: 1px solid #e4e7ec; vertical-align: top; }
+.os-page .slip-table td:first-child { color: #555; width: 130px; font-size: 12px; }
+.os-page .slip-actions { margin-top: 10px; text-align: right; }
+.os-page .invoice-sheet { position: relative; }
+.os-page .invoice-stamp { position: absolute; top: 40%; left: 50%; transform: translate(-50%, -50%) rotate(-18deg); font-size: 54px; font-weight: 800; letter-spacing: 6px; color: rgba(185, 28, 28, 0.22); border: 6px solid rgba(185, 28, 28, 0.22); padding: 4px 24px; pointer-events: none; }
+.os-page .invoice-totals { width: 100%; max-width: 380px; margin-left: auto; border-collapse: collapse; margin-top: 4px; }
+.os-page .invoice-totals td { padding: 4px 8px; text-align: right; }
+.os-page .invoice-totals td:first-child { text-align: left; color: #444; }
+.os-page .invoice-net td { border-top: 2px solid #111; font-weight: 700; font-size: 15px; color: #111 !important; }
+.os-page .invoice-refund { margin-top: 12px; padding: 8px 10px; border: 1px solid #b91c1c; background: #fee2e2; color: #7f1d1d; border-radius: 4px; font-size: 12.5px; line-height: 1.6; }
+
+/* Printing: only the sheet (hms.css hides everything else and shows the ABHA card the same way). */
+@media print {
+  body * { visibility: hidden; }
+  #rx-sheet, #rx-sheet *, .print-area, .print-area * { visibility: visible; }
+  #rx-sheet { position: absolute; left: 0; top: 0; width: 100%; border: none; padding: 0; }
+  .print-area { position: absolute; left: 0; top: 0; width: 100%; }
+  .os-page .modal-overlay, .os-page .modal { position: static; background: none; box-shadow: none; max-height: none; overflow: visible; }
+  .os-page .slip { border: 1px solid #111; page-break-after: always; break-after: page; margin: 0 0 12px; }
+  .os-page .slip:last-child { page-break-after: auto; break-after: auto; }
+  .no-print, .no-print-btn { display: none !important; }
+}
+
+/* ---------- Shared with the application's own screens ---------- */
+/* A message at the bottom of the screen (e.g. the server refused an action) */
+.toast { position: fixed; left: 50%; bottom: 24px; transform: translateX(-50%); max-width: 560px; padding: 11px 16px; border-radius: var(--r-lg); font-size: 13px; box-shadow: var(--shadow-2); cursor: pointer; z-index: 120; }
+.toast.error { background: #7f1d1d; color: #fff; }
+.toast.info { background: var(--nav-bg); color: #fff; }
+/* Dashboard */
+.section-title { font-size: 13px; font-weight: 600; color: var(--text-2); margin: 4px 0 10px; text-transform: uppercase; letter-spacing: 0.04em; }
+.metric-alert { border-color: var(--danger-line); }
+.metric-alert .metric-value { color: var(--danger); }
